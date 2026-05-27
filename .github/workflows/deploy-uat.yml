@@ -4,10 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'apps/**'
-      - 'infra/**'
-      - '.github/workflows/deploy-uat.yml'
 
 concurrency:
   group: deploy-growth-uat
