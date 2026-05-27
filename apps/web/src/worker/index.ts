@@ -189,6 +189,10 @@ async function main() {
   });
 
   // ─── Register cron schedules ─────────────────────────────────────────────────
+  // Queues must exist in pgboss.queue before schedule() can insert the FK row.
+  await boss.createQueue("outreach-due-check");
+  await boss.createQueue("weekly-insights-trigger");
+  await boss.createQueue("trial-daily-check");
 
   await boss.schedule("outreach-due-check", "*/15 * * * *");
   await boss.schedule("weekly-insights-trigger", "0 6 * * 1");
