@@ -33,7 +33,7 @@ async function main() {
       data: {
         name: "Korrali",
         slug: "korrali-growth",
-        members: { create: { userId: user.id, role: "OWNER" } },
+        members: { create: { userId: user.id, role: "SUPER_ADMIN" } },
       },
     });
   }

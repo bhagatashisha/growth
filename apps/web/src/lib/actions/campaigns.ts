@@ -38,7 +38,7 @@ export async function pauseCampaignAction(campaignId: string): Promise<void> {
 }
 
 export async function globalEmergencyStopAction(): Promise<void> {
-  await requireRole("OWNER");
+  await requireRole("SUPER_ADMIN");
   await prisma.growthSettings.upsert({
     where: { id: "global" },
     create: { id: "global", globalEmergencyStop: true },

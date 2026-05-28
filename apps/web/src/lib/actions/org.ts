@@ -33,7 +33,7 @@ export async function createOrgAction(formData: FormData): Promise<void> {
       members: {
         create: {
           userId: session.user.id,
-          role: "OWNER",
+          role: "SUPER_ADMIN",
         },
       },
     },
