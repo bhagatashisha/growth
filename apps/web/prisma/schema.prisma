@@ -184,6 +184,10 @@ enum ContentType {
   OBJECTION_HANDLER
   CASE_STUDY_DRAFT
   EMAIL_TEMPLATE
+  X_THREAD
+  REDDIT_POST
+  INDIE_HACKERS_POST
+  REDDIT_COMMENT
 }
 
 // ─── Growth Settings (singleton) ─────────────────────────────────────────────
@@ -359,13 +363,28 @@ model EmailMessage {
 }
 
 model ReplyClassification {
-  id           String        @id @default(cuid())
-  messageId    String        @unique
-  category     ReplyCategory
-  priority     Int
-  founderDraft String?
-  createdAt    DateTime      @default(now())
-  message      EmailMessage  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  id                  String        @id @default(cuid())
+  messageId           String        @unique
+  category            ReplyCategory
+  priority            Int
+  founderDraft        String?
+  autoSendAt          DateTime?     // set to now+2h when INTERESTED; null for all other categories
+  autoSendCancelledAt DateTime?     // set when founder cancels before window expires
+  autoSentAt          DateTime?     // set after the draft is auto-sent
+  createdAt           DateTime      @default(now())
+  message             EmailMessage  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+}
+
+// ─── Company Discovery ────────────────────────────────────────────────────────
+
+model DiscoveryRun {
+  id             String   @id @default(cuid())
+  source         String   @default("web_research")
+  queriesRun     Int      @default(0)
+  companiesFound Int      @default(0)
+  companiesNew   Int      @default(0)
+  error          String?
+  createdAt      DateTime @default(now())
 }
 
 // ─── Suppression ──────────────────────────────────────────────────────────────
@@ -473,6 +492,62 @@ model PartnerContact {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   company     Company? @relation(fields: [companyId], references: [id], onDelete: SetNull)
+}
+
+// ─── Reddit Scout ─────────────────────────────────────────────────────────────
+
+model RedditMention {
+  id               String    @id @default(cuid())
+  redditPostId     String    @unique
+  subreddit        String
+  title            String
+  body             String?
+  url              String
+  author           String
+  score            Int       @default(0)
+  numComments      Int       @default(0)
+  createdUtc       Int
+  intentScore      Int?
+  intentReason     String?
+  icpSignal        String?
+  replyVariants    String[]
+  status           String    @default("pending")
+  approvedAt       DateTime?
+  dismissedAt      DateTime?
+  postedManuallyAt DateTime?
+  postedUrl        String?
+  scannedAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status])
+  @@index([subreddit, createdUtc])
+  @@index([intentScore])
+}
+
+model RedditScanLog {
+  id         String   @id @default(cuid())
+  subreddit  String
+  keyword    String
+  postsFound Int      @default(0)
+  newPosts   Int      @default(0)
+  error      String?
+  durationMs Int?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([subreddit, keyword])
+}
+
+model RedditScanState {
+  id                String   @id @default(cuid())
+  subreddit         String
+  keyword           String
+  lastPostIdCursor  String?
+  lastScannedAt     DateTime @default(now())
+  consecutiveErrors Int      @default(0)
+  updatedAt         DateTime @updatedAt
+
+  @@unique([subreddit, keyword])
 }
 
 // ─── Content Drafts ───────────────────────────────────────────────────────────

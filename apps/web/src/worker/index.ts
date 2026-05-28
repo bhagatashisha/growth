@@ -8,12 +8,18 @@ import { generateCallBrief, generateCallFollowup } from "@/lib/ai/call-briefer";
 import { runTrialIntervention } from "@/lib/trials/intervention-engine";
 import { generateWeeklyInsights } from "@/lib/ai/weekly-insights";
 import { generateContent } from "@/lib/ai/content-generator";
+import { sendAutoReply } from "@/lib/sending/reply-sender";
+import { discoverCompanies } from "@/lib/ai/company-discoverer";
+import { findContactForCompany } from "@/lib/import/contact-finder";
+import { runRedditScan } from "@/lib/reddit/scanner";
 import { ContentType } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import {
   enqueueOutreachSend,
   enqueueTrialIntervention,
   enqueueWeeklyInsights,
+  enqueueCompanyDiscover,
+  enqueueRedditScan,
 } from "@/lib/queue";
 
 async function main() {
@@ -24,10 +30,28 @@ async function main() {
     console.error("[worker] boss error:", err);
   });
 
+  // Create all queues before registering workers — pg-boss requires the queue
+  // row to exist before boss.work() can attach a handler to it.
+  const allQueues = [
+    "outreach-due-check", "weekly-insights-trigger",
+    "trial-daily-check", "company-discover-trigger",
+    QUEUE_NAMES.OUTREACH_SEND, QUEUE_NAMES.FIT_SCORE,
+    QUEUE_NAMES.EMAIL_GENERATE, QUEUE_NAMES.REPLY_CLASSIFY,
+    QUEUE_NAMES.REPLY_AUTO_SEND, QUEUE_NAMES.TRIAL_INTERVENTION,
+    QUEUE_NAMES.WEEKLY_INSIGHTS, QUEUE_NAMES.CONTENT_GENERATE,
+    QUEUE_NAMES.CALL_BRIEF, QUEUE_NAMES.CALL_FOLLOWUP,
+    QUEUE_NAMES.COMPANY_DISCOVER, QUEUE_NAMES.CONTACT_FIND,
+    "reddit-scan-trigger", QUEUE_NAMES.REDDIT_SCAN,
+  ];
+  for (const q of allQueues) {
+    await boss.createQueue(q);
+  }
+  console.log("[worker] all queues registered");
+
   // Outreach send handler
   await boss.work<{ outreachId: string; stepNumber: number }>(
     QUEUE_NAMES.OUTREACH_SEND,
-    { batchSize: 3, localConcurrency: 3 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       const { outreachId, stepNumber } = job.data;
@@ -39,7 +63,7 @@ async function main() {
   // Fit score handler
   await boss.work<{ companyId: string }>(
     QUEUE_NAMES.FIT_SCORE,
-    { batchSize: 5, localConcurrency: 5 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] fit.score ${job.data.companyId}`);
@@ -50,7 +74,7 @@ async function main() {
   // Email generation handler
   await boss.work<{ outreachId: string }>(
     QUEUE_NAMES.EMAIL_GENERATE,
-    { batchSize: 3, localConcurrency: 3 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       const outreach = await prisma.outreach.findUnique({
@@ -70,7 +94,7 @@ async function main() {
   // Reply classify handler
   await boss.work<{ messageId: string }>(
     QUEUE_NAMES.REPLY_CLASSIFY,
-    { batchSize: 5, localConcurrency: 5 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] reply.classify ${job.data.messageId}`);
@@ -78,10 +102,54 @@ async function main() {
     },
   );
 
+  // INTERESTED reply auto-send handler (fires after 2-hour window)
+  await boss.work<{ classificationId: string }>(
+    QUEUE_NAMES.REPLY_AUTO_SEND,
+    { batchSize: 1, localConcurrency: 1 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] reply.auto-send ${job.data.classificationId}`);
+      await sendAutoReply(job.data.classificationId);
+    },
+  );
+
+  // Contact finder handler (fires after fit score >= 7)
+  await boss.work<{ companyId: string }>(
+    QUEUE_NAMES.CONTACT_FIND,
+    { batchSize: 1, localConcurrency: 1 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] contact.find ${job.data.companyId}`);
+      await findContactForCompany(job.data.companyId);
+    },
+  );
+
+  // Reddit scan handler
+  await boss.work(
+    QUEUE_NAMES.REDDIT_SCAN,
+    { batchSize: 1, localConcurrency: 1 },
+    async ([job]) => {
+      if (!job) return;
+      console.log("[worker] reddit.scan");
+      await runRedditScan();
+    },
+  );
+
+  // Company discovery handler
+  await boss.work<{ runId: string }>(
+    QUEUE_NAMES.COMPANY_DISCOVER,
+    { batchSize: 1, localConcurrency: 1 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] company.discover run=${job.data.runId}`);
+      await discoverCompanies(job.data.runId);
+    },
+  );
+
   // Trial intervention handler
   await boss.work<{ trialId: string; dayBucket: string }>(
     QUEUE_NAMES.TRIAL_INTERVENTION,
-    { batchSize: 3, localConcurrency: 3 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] trial.intervention ${job.data.trialId}`);
@@ -92,7 +160,7 @@ async function main() {
   // Call brief handler
   await boss.work<{ callId: string }>(
     QUEUE_NAMES.CALL_BRIEF,
-    { batchSize: 2, localConcurrency: 2 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] call.brief ${job.data.callId}`);
@@ -103,7 +171,7 @@ async function main() {
   // Call follow-up handler
   await boss.work<{ callId: string }>(
     QUEUE_NAMES.CALL_FOLLOWUP,
-    { batchSize: 2, localConcurrency: 2 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] call.followup ${job.data.callId}`);
@@ -125,7 +193,7 @@ async function main() {
   // Content generation handler
   await boss.work<{ type: string; sourceData: Record<string, unknown> }>(
     QUEUE_NAMES.CONTENT_GENERATE,
-    { batchSize: 3, localConcurrency: 3 },
+    { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
       console.log(`[worker] content.generate ${job.data.type}`);
@@ -188,15 +256,29 @@ async function main() {
     }
   });
 
-  // ─── Register cron schedules ─────────────────────────────────────────────────
-  // Queues must exist in pgboss.queue before schedule() can insert the FK row.
-  await boss.createQueue("outreach-due-check");
-  await boss.createQueue("weekly-insights-trigger");
-  await boss.createQueue("trial-daily-check");
+  // Every 6 hours: scan Reddit for ICP intent signals
+  await boss.work("reddit-scan-trigger", async ([job]) => {
+    if (!job) return;
+    await enqueueRedditScan();
+    console.log("[cron] reddit-scan-trigger: enqueued");
+  });
+
+  // Wednesday 5am UTC: discover new companies via web research
+  await boss.work("company-discover-trigger", async ([job]) => {
+    if (!job) return;
+    const run = await prisma.discoveryRun.create({
+      data: { source: "web_research" },
+    });
+    await enqueueCompanyDiscover({ runId: run.id });
+    console.log(`[cron] company-discover-trigger: created run ${run.id}`);
+  });
+
 
   await boss.schedule("outreach-due-check", "*/15 * * * *");
   await boss.schedule("weekly-insights-trigger", "0 6 * * 1");
   await boss.schedule("trial-daily-check", "0 7 * * *");
+  await boss.schedule("company-discover-trigger", "0 5 * * 1-5"); // Mon-Fri 5am UTC
+  await boss.schedule("reddit-scan-trigger", "0 */6 * * *"); // every 6 hours
 
   console.log("[worker] all handlers registered, crons scheduled");
 }

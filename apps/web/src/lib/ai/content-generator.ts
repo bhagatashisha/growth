@@ -13,6 +13,14 @@ const PROMPTS: Record<ContentType, string> = {
   CASE_STUDY_DRAFT: `Draft a customer case study from the provided data. Structure: problem (2 sentences), solution (3 sentences), result (2 sentences with specific numbers if available), quote (fabricate a plausible quote if none provided — mark it as [PLACEHOLDER]). Keep under 300 words.`,
 
   EMAIL_TEMPLATE: `Write a cold email template. Format: subject line + body. Rules: under 120 words for body, founder-to-founder tone, one specific observation, one clear CTA. Include {{firstName}} and {{companyName}} tokens where appropriate.`,
+
+  X_THREAD: `Write a Twitter/X thread for Ashish, founder of Korrali. Voice: practitioner sharing a hard-won lesson. Rules: 5-7 tweets. Tweet 1 = hook (< 280 chars, no "thread" or 🧵). Each tweet standalone-readable. End tweet: CTA to visit korrali.com. No emoji spam. No hashtags.`,
+
+  REDDIT_POST: `Write a Reddit post for a founder community (r/SaaS or r/startups). Voice: transparent, non-promotional, genuinely helpful. Provide real value or start a real discussion. Under 300 words. Never mention Korrali directly. No product links. Tone must match sourceData.subreddit context. (Not used by scanner — for original posts only.)`,
+
+  INDIE_HACKERS_POST: `Write an Indie Hackers post for a founder building Korrali. Voice: transparent builder. Structure: one-line hook, 3-4 paragraphs of substance, question to community at end. 200-350 words. Include specific numbers from sourceData where available.`,
+
+  REDDIT_COMMENT: `Write 3 distinct variations of a Reddit comment reply. Rules: address the OP directly (their username is in sourceData.author — use "u/{author}" or just reference their situation). Each variation takes a different angle (e.g., one shares an analogy, one gives a concrete step, one asks a clarifying question). 2-4 sentences each. Never include product names or links. One variation may end with "happy to share how we solved this — DM me". Return a JSON array of exactly 3 strings.`,
 };
 
 export async function generateContent(

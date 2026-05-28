@@ -1,0 +1,322 @@
+import dns from "node:dns/promises";
+import { prisma } from "@/lib/db";
+import { anthropic } from "@/lib/ai/claude";
+import { HIGH_INTENT_MODEL } from "@/lib/ai/models";
+import { enqueueEmailGenerate, enqueueOutreachSend } from "@/lib/queue";
+import type { FitProduct } from "@prisma/client";
+
+// ─── Persona targeting by product ────────────────────────────────────────────
+
+const TRUST_PERSONAS = [
+  '"head of security"',
+  '"ciso"',
+  '"vp security"',
+  '"security lead"',
+  '"head of trust"',
+  '"compliance manager"',
+  '"cto"',
+];
+
+const REVENUE_PERSONAS = [
+  '"vp engineering"',
+  '"head of engineering"',
+  '"revops"',
+  '"revenue operations"',
+  '"vp finance"',
+  '"head of finance"',
+  '"cto"',
+];
+
+// For companies < 50 employees always add founder/CEO
+const SMALL_CO_PERSONAS = ['"ceo"', '"founder"', '"co-founder"'];
+
+function personasForProduct(fitProduct: FitProduct, employeeCount: number | null): string[] {
+  const base = fitProduct === "TRUST" ? TRUST_PERSONAS : REVENUE_PERSONAS;
+  const isSmall = !employeeCount || employeeCount < 50;
+  return isSmall ? [...SMALL_CO_PERSONAS, ...base] : base;
+}
+
+// ─── Tavily search ────────────────────────────────────────────────────────────
+
+interface SearchResult {
+  title: string;
+  url: string;
+  content: string;
+}
+
+async function tavilySearch(query: string, maxResults = 5): Promise<SearchResult[]> {
+  const apiKey = process.env.TAVILY_API_KEY;
+  if (!apiKey) throw new Error("TAVILY_API_KEY not set");
+
+  const res = await fetch("https://api.tavily.com/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      api_key: apiKey,
+      query,
+      search_depth: "basic",
+      max_results: maxResults,
+      include_answer: false,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`Tavily error ${res.status}`);
+
+  const data = (await res.json()) as {
+    results?: Array<{ title?: string; url?: string; content?: string }>;
+  };
+
+  return (data.results ?? []).map((r) => ({
+    title: r.title ?? "",
+    url: r.url ?? "",
+    content: r.content ?? "",
+  }));
+}
+
+// ─── Claude extraction ────────────────────────────────────────────────────────
+
+interface ExtractedContact {
+  firstName: string;
+  lastName: string;
+  title: string;
+  linkedinUrl: string | null;
+  confidence: number; // 1-10
+}
+
+const EXTRACT_SYSTEM = `Extract a B2B contact person from search results for a target company.
+Return the single best match — the most senior relevant person you can find.
+If no real person is found, return null for all fields and confidence 0.
+Respond with valid JSON only.`;
+
+const EXTRACT_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    firstName:   { type: "string" },
+    lastName:    { type: "string" },
+    title:       { type: "string" },
+    linkedinUrl: { type: ["string", "null"] },
+    confidence:  { type: "number", description: "1-10, how confident this is the right person" },
+  },
+  required: ["firstName", "lastName", "title", "linkedinUrl", "confidence"],
+  additionalProperties: false,
+};
+
+async function extractContact(
+  results: SearchResult[],
+  companyName: string,
+  personas: string[],
+): Promise<ExtractedContact | null> {
+  if (results.length === 0) return null;
+
+  const snippets = results
+    .map((r) => `[${r.title}]\n${r.url}\n${r.content}`)
+    .join("\n\n---\n\n");
+
+  const response = await anthropic.messages.create({
+    model: HIGH_INTENT_MODEL,
+    max_tokens: 256,
+    system: [{ type: "text", text: EXTRACT_SYSTEM, cache_control: { type: "ephemeral" } }],
+    messages: [{
+      role: "user",
+      content: `Company: ${companyName}\nLooking for: ${personas.slice(0, 4).join(", ")}\n\nSearch results:\n${snippets}`,
+    }],
+    output_config: { format: { type: "json_schema", schema: EXTRACT_SCHEMA } },
+  });
+
+  const block = response.content.find((b) => b.type === "text");
+  if (!block || block.type !== "text") return null;
+
+  try {
+    const parsed = JSON.parse(block.text) as ExtractedContact;
+    return parsed.confidence >= 4 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Email pattern generation ─────────────────────────────────────────────────
+
+// Ordered by frequency in B2B SaaS (most common first)
+export function generateEmailPatterns(
+  firstName: string,
+  lastName: string,
+  domain: string,
+): string[] {
+  const f = firstName.toLowerCase().trim();
+  const l = lastName.toLowerCase().trim();
+  if (!f || !l || !domain) return [];
+
+  return [
+    `${f}@${domain}`,
+    `${f}.${l}@${domain}`,
+    `${f[0]}.${l}@${domain}`,
+    `${f}${l}@${domain}`,
+    `${f[0]}${l}@${domain}`,
+    `${l}@${domain}`,
+  ];
+}
+
+// ─── MX record check (confirms domain accepts email at all) ──────────────────
+
+async function domainHasMx(domain: string): Promise<boolean> {
+  try {
+    const records = await dns.resolveMx(domain);
+    return records.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ─── Auto-outreach: find active campaign + create outreach ───────────────────
+
+async function autoEnqueueOutreach(
+  contactId: string,
+  companyId: string,
+  fitProduct: FitProduct,
+): Promise<boolean> {
+  // Find a standing active campaign for this product
+  // BOTH → prefer TRUST campaign; REJECT is already filtered upstream
+  const product = fitProduct === "BOTH" ? "TRUST" : (fitProduct as "TRUST" | "REVENUE");
+
+  const campaign = await prisma.campaign.findFirst({
+    where: { product, status: "ACTIVE" },
+    orderBy: { createdAt: "asc" }, // oldest = most established campaign
+  });
+
+  if (!campaign) return false; // no active campaign yet — contact stored, outreach created when campaign goes live
+
+  // Upsert outreach (idempotent if called twice)
+  const outreach = await prisma.outreach.upsert({
+    where: { contactId_campaignId: { contactId, campaignId: campaign.id } },
+    create: {
+      contactId,
+      campaignId: campaign.id,
+      companyId,
+      status: "PENDING",
+      currentStep: 1,
+    },
+    update: {},
+  });
+
+  await enqueueEmailGenerate({ outreachId: outreach.id });
+  await enqueueOutreachSend({ outreachId: outreach.id, stepNumber: 1 });
+
+  await prisma.auditLog.create({
+    data: {
+      actor: "system",
+      action: "contact.auto_outreach_created",
+      entity: "Outreach",
+      entityId: outreach.id,
+      metadata: { contactId, campaignId: campaign.id, fitProduct },
+    },
+  });
+
+  return true;
+}
+
+// ─── Main entry point ─────────────────────────────────────────────────────────
+
+export async function findContactForCompany(companyId: string): Promise<void> {
+  const company = await prisma.company.findUniqueOrThrow({ where: { id: companyId } });
+
+  if (!company.fitProduct || company.fitProduct === "REJECT") return;
+  if (!company.domain) return;
+
+  // Skip if we already have a non-suppressed contact for this company
+  const existing = await prisma.contact.findFirst({
+    where: { companyId, suppressedAt: null },
+  });
+  if (existing) {
+    // Still try to create outreach if none exists
+    await autoEnqueueOutreach(existing.id, companyId, company.fitProduct);
+    return;
+  }
+
+  const personas = personasForProduct(company.fitProduct, company.employeeCount);
+
+  // Build search queries — two passes: LinkedIn search + company team page
+  const titleQuery = personas.slice(0, 3).join(" OR ");
+  const linkedinQuery = `"${company.name}" (${titleQuery}) site:linkedin.com/in`;
+  const teamQuery = `"${company.name}" (${titleQuery}) contact email`;
+
+  const [linkedinResults, teamResults] = await Promise.all([
+    tavilySearch(linkedinQuery, 5).catch(() => [] as SearchResult[]),
+    tavilySearch(teamQuery, 5).catch(() => [] as SearchResult[]),
+  ]);
+
+  const allResults = [...linkedinResults, ...teamResults];
+  const contact = await extractContact(allResults, company.name, personas);
+
+  if (!contact || !contact.firstName || !contact.lastName) {
+    await prisma.auditLog.create({
+      data: {
+        actor: "system",
+        action: "contact.find.no_result",
+        entity: "Company",
+        entityId: companyId,
+        metadata: { companyName: company.name, domain: company.domain },
+      },
+    });
+    return;
+  }
+
+  // Confirm domain accepts email before creating anything
+  const hasMx = await domainHasMx(company.domain);
+  if (!hasMx) {
+    await prisma.auditLog.create({
+      data: {
+        actor: "system",
+        action: "contact.find.no_mx",
+        entity: "Company",
+        entityId: companyId,
+        metadata: { domain: company.domain },
+      },
+    });
+    return;
+  }
+
+  // Pick primary email pattern (firstname@domain is most common for B2B SaaS)
+  const patterns = generateEmailPatterns(contact.firstName, contact.lastName, company.domain);
+  const primaryEmail = patterns[0];
+  if (!primaryEmail) return;
+
+  // Create contact — bounce handling via existing Resend webhook suppresses invalids automatically
+  const newContact = await prisma.contact.upsert({
+    where: { email: primaryEmail },
+    create: {
+      email: primaryEmail,
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      title: contact.title,
+      linkedinUrl: contact.linkedinUrl ?? undefined,
+      companyId,
+      isBuyer: true,
+    },
+    update: {
+      firstName: contact.firstName,
+      lastName: contact.lastName,
+      title: contact.title,
+      linkedinUrl: contact.linkedinUrl ?? undefined,
+      companyId,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actor: "system",
+      action: "contact.found",
+      entity: "Contact",
+      entityId: newContact.id,
+      metadata: {
+        companyName: company.name,
+        email: primaryEmail,
+        title: contact.title,
+        confidence: contact.confidence,
+        patternUsed: "firstname@domain",
+      },
+    },
+  });
+
+  // Wire into active campaign immediately
+  await autoEnqueueOutreach(newContact.id, companyId, company.fitProduct);
+}

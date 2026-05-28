@@ -5,11 +5,15 @@ export const QUEUE_NAMES = {
   FIT_SCORE:            "fit.score",
   EMAIL_GENERATE:       "email.generate",
   REPLY_CLASSIFY:       "reply.classify",
+  REPLY_AUTO_SEND:      "reply.auto-send",
   TRIAL_INTERVENTION:   "trial.intervention",
   WEEKLY_INSIGHTS:      "weekly.insights",
   CONTENT_GENERATE:     "content.generate",
   CALL_BRIEF:           "call.brief",
   CALL_FOLLOWUP:        "call.followup",
+  COMPANY_DISCOVER:     "company.discover",
+  CONTACT_FIND:         "contact.find",
+  REDDIT_SCAN:          "reddit.scan",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -51,6 +55,18 @@ export interface CallBriefPayload {
 
 export interface CallFollowupPayload {
   callId: string;
+}
+
+export interface ReplyAutoSendPayload {
+  classificationId: string;
+}
+
+export interface CompanyDiscoverPayload {
+  runId: string;
+}
+
+export interface ContactFindPayload {
+  companyId: string;
 }
 
 let bossPromise: Promise<PgBoss> | null = null;
@@ -171,5 +187,52 @@ export async function enqueueCallFollowup(
     retryLimit: 2,
     retryDelay: 30,
     expireInSeconds: 10 * 60,
+  });
+}
+
+export async function enqueueReplyAutoSend(
+  payload: ReplyAutoSendPayload,
+  startAfter: Date,
+): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.REPLY_AUTO_SEND, payload, {
+    singletonKey: `reply-auto-send-${payload.classificationId}`,
+    retryLimit: 2,
+    retryDelay: 30,
+    expireInSeconds: 4 * 60 * 60, // expire after 4h — if it hasn't fired by then, skip
+    startAfter,
+  });
+}
+
+export async function enqueueContactFind(
+  payload: ContactFindPayload,
+): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.CONTACT_FIND, payload, {
+    singletonKey: `contact-find-${payload.companyId}`,
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: 15 * 60,
+  });
+}
+
+export async function enqueueCompanyDiscover(
+  payload: CompanyDiscoverPayload,
+): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.COMPANY_DISCOVER, payload, {
+    singletonKey: `company-discover-${payload.runId}`,
+    retryLimit: 1,
+    expireInSeconds: 30 * 60,
+  });
+}
+
+export async function enqueueRedditScan(): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.REDDIT_SCAN, {}, {
+    singletonKey: "reddit-scan",
+    retryLimit: 1,
+    retryDelay: 120,
+    expireInSeconds: 20 * 60,
   });
 }

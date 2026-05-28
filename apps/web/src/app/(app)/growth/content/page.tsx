@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatDate } from "@/lib/utils";
 import { approveContentAction } from "@/lib/actions/content";
+import Link from "next/link";
 
 export default async function ContentPage() {
   await requireOrgContext();
@@ -16,9 +17,17 @@ export default async function ContentPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Content drafts</h1>
-        <p className="mt-1 text-sm text-muted-foreground">{drafts.length} drafts</p>
+      <div className="flex items-start justify-between">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Content drafts</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{drafts.length} drafts</p>
+        </div>
+        <Link
+          href="/growth/content/atomize"
+          className="inline-flex items-center rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Atomize content
+        </Link>
       </div>
 
       <div className="space-y-4">

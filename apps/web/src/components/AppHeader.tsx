@@ -3,7 +3,7 @@ import { LogOut } from "lucide-react";
 import { signOutAction } from "@/lib/actions/auth";
 import { cn } from "@/lib/utils";
 
-type NavKey = "growth" | "companies" | "contacts" | "campaigns" | "outreach" | "inbox" | "calls" | "trials" | "content" | "settings";
+type NavKey = "growth" | "companies" | "contacts" | "campaigns" | "outreach" | "inbox" | "calls" | "trials" | "content" | "reddit" | "settings";
 
 interface Props {
   orgName: string;
@@ -21,6 +21,7 @@ const NAV_ITEMS: { href: string; label: string; key: NavKey }[] = [
   { href: "/growth/calls", label: "Calls", key: "calls" },
   { href: "/growth/trials", label: "Trials", key: "trials" },
   { href: "/growth/content", label: "Content", key: "content" },
+  { href: "/growth/reddit", label: "Reddit", key: "reddit" },
   { href: "/growth/settings", label: "Settings", key: "settings" },
 ];
 

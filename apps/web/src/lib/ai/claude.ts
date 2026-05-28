@@ -9,7 +9,7 @@ export const anthropic = new Anthropic({
 export const CLAUDE_MODELS = {
   default: "claude-sonnet-4-6",
   premium: "claude-opus-4-7",
-  cheap: "claude-haiku-4-5",
+  cheap: "claude-haiku-4-5-20251001",
 } as const;
 
 export type ClaudeModel = (typeof CLAUDE_MODELS)[keyof typeof CLAUDE_MODELS];

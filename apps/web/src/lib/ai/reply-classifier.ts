@@ -3,6 +3,9 @@ import { anthropic } from "@/lib/ai/claude";
 import { BULK_MODEL } from "@/lib/ai/models";
 import { ReplyCategory, SuppressionReason } from "@prisma/client";
 import { addEmailSuppression } from "@/lib/sending/suppression";
+import { enqueueReplyAutoSend } from "@/lib/queue";
+
+const AUTO_SEND_DELAY_HOURS = 2;
 
 const STOP_CATEGORIES = new Set<ReplyCategory>([
   ReplyCategory.UNSUBSCRIBE,
@@ -74,6 +77,11 @@ export async function classifyReply(messageId: string) {
     founderDraft: string;
   };
 
+  const isInterested = parsed.category === ReplyCategory.INTERESTED;
+  const autoSendAt = isInterested && parsed.founderDraft
+    ? new Date(Date.now() + AUTO_SEND_DELAY_HOURS * 60 * 60 * 1000)
+    : null;
+
   const classification = await prisma.replyClassification.upsert({
     where: { messageId },
     create: {
@@ -81,11 +89,14 @@ export async function classifyReply(messageId: string) {
       category: parsed.category,
       priority: parsed.priority,
       founderDraft: parsed.founderDraft,
+      autoSendAt,
     },
     update: {
       category: parsed.category,
       priority: parsed.priority,
       founderDraft: parsed.founderDraft,
+      // Only set autoSendAt on re-classification if not already sent/cancelled
+      autoSendAt: isInterested && parsed.founderDraft ? autoSendAt : undefined,
     },
   });
 
@@ -95,9 +106,18 @@ export async function classifyReply(messageId: string) {
       action: "reply.classified",
       entity: "EmailMessage",
       entityId: messageId,
-      metadata: { category: parsed.category, priority: parsed.priority },
+      metadata: {
+        category: parsed.category,
+        priority: parsed.priority,
+        autoSendScheduled: isInterested,
+      },
     },
   });
+
+  // Schedule the deferred auto-send job for INTERESTED replies
+  if (isInterested && autoSendAt && parsed.founderDraft) {
+    await enqueueReplyAutoSend({ classificationId: classification.id }, autoSendAt);
+  }
 
   // Stop sequence and suppress for terminal categories
   if (STOP_CATEGORIES.has(parsed.category) && message.outreachId) {

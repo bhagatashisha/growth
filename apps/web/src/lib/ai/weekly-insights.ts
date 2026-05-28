@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { anthropic } from "@/lib/ai/claude";
 import { HIGH_INTENT_MODEL } from "@/lib/ai/models";
 import { ReplyCategory } from "@prisma/client";
+import { enqueueContentGenerate } from "@/lib/queue";
 
 export async function generateWeeklyInsights(weekOf: Date): Promise<void> {
   const weekStart = new Date(weekOf);
@@ -90,4 +91,16 @@ export async function generateWeeklyInsights(weekOf: Date): Promise<void> {
       rawStats,
     },
   });
+
+  // Auto-atomize this week's insight into draft content for review
+  const sourceData = {
+    summary: parsed.summary,
+    recommendations: parsed.recommendations,
+    bestSegments: parsed.bestSegments,
+    topObjections: parsed.topObjections,
+    weekOf: weekStart.toISOString(),
+  };
+  for (const type of ["LINKEDIN_POST", "X_THREAD", "INDIE_HACKERS_POST"] as const) {
+    await enqueueContentGenerate({ type, sourceData });
+  }
 }

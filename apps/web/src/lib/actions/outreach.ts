@@ -35,3 +35,30 @@ export async function stopOutreachAction(outreachId: string): Promise<void> {
   await requireRole("MEMBER");
   await stopOutreachSequence(outreachId, "manual");
 }
+
+export async function cancelAutoSendAction(classificationId: string): Promise<void> {
+  await requireRole("MEMBER");
+
+  const classification = await prisma.replyClassification.findUniqueOrThrow({
+    where: { id: classificationId },
+  });
+
+  if (classification.autoSentAt) {
+    throw new Error("Reply already sent — cannot cancel.");
+  }
+
+  await prisma.replyClassification.update({
+    where: { id: classificationId },
+    data: { autoSendCancelledAt: new Date() },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actor: "founder",
+      action: "reply.auto_send_cancelled",
+      entity: "ReplyClassification",
+      entityId: classificationId,
+      metadata: {},
+    },
+  });
+}
