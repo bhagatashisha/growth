@@ -84,7 +84,8 @@ jobs:
 
             pnpm install --frozen-lockfile
             pnpm exec prisma generate
-            pnpm exec prisma db push --skip-generate --accept-data-loss
+            pnpm exec prisma migrate resolve --applied 0_init 2>/dev/null || true
+            pnpm exec prisma migrate deploy
             pnpm build
 
             pm2 delete growth-web-uat 2>/dev/null || true
