@@ -54,7 +54,12 @@ export default async function SeoPage() {
                       )}
                       <span className="text-xs text-muted-foreground">{formatDate(a.createdAt)}</span>
                     </div>
-                    <p className="text-sm font-medium">{a.title}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium">{a.title}</p>
+                      <a href={`/growth/seo/preview/${a.id}`} className="text-xs text-blue-600 hover:underline shrink-0">
+                        Preview ↗
+                      </a>
+                    </div>
                     {a.metaDescription && (
                       <p className="text-xs text-muted-foreground line-clamp-2">{a.metaDescription}</p>
                     )}
@@ -90,14 +95,20 @@ export default async function SeoPage() {
                   <div className="space-y-1 min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       {a.product && <Badge variant="default">{a.product}</Badge>}
+                      <a
+                        href={`/growth/seo/preview/${a.id}`}
+                        className="text-xs text-blue-600 hover:underline"
+                      >
+                        Preview ↗
+                      </a>
                       {a.slug && (
                         <a
                           href={`https://${a.product === "TRUST" ? "trust" : "revenue"}.korrali.com/blog/${a.slug}`}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="text-xs text-blue-600 hover:underline"
+                          className="text-xs text-muted-foreground hover:underline"
                         >
-                          View live ↗
+                          Live site ↗
                         </a>
                       )}
                       <span className="text-xs text-muted-foreground">
