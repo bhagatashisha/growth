@@ -30,6 +30,23 @@ const REVENUE_PERSONAS = [
 // For companies < 50 employees always add founder/CEO
 const SMALL_CO_PERSONAS = ['"ceo"', '"founder"', '"co-founder"'];
 
+// Titles that indicate a buying decision-maker. Anyone else (engineer, intern,
+// analyst, etc.) found incidentally should not enter the outreach pipeline.
+const BUYER_TITLE_PATTERNS = [
+  /\b(ceo|cto|ciso|coo|cfo|cpo)\b/i,
+  /\b(founder|co-founder|cofounder)\b/i,
+  /\b(vp|vice president)\b.*(engineer|security|product|finance|revenue|infra)/i,
+  /\b(head|director)\s+of\s+(security|trust|compliance|engineering|product|finance|revenue|infra)/i,
+  /\b(engineering|security|compliance|product|revenue)\s+(manager|lead|director)\b/i,
+  /\brevops\b/i,
+  /\bchief\b/i,
+];
+
+function isBuyerTitle(title: string | null | undefined): boolean {
+  if (!title) return false;
+  return BUYER_TITLE_PATTERNS.some((re) => re.test(title));
+}
+
 function personasForProduct(fitProduct: FitProduct, employeeCount: number | null): string[] {
   const base = fitProduct === "TRUST" ? TRUST_PERSONAS : REVENUE_PERSONAS;
   const isSmall = !employeeCount || employeeCount < 50;
@@ -290,7 +307,7 @@ export async function findContactForCompany(companyId: string): Promise<void> {
       title: contact.title,
       linkedinUrl: contact.linkedinUrl ?? undefined,
       companyId,
-      isBuyer: true,
+      isBuyer: isBuyerTitle(contact.title),
     },
     update: {
       firstName: contact.firstName,
@@ -298,6 +315,8 @@ export async function findContactForCompany(companyId: string): Promise<void> {
       title: contact.title,
       linkedinUrl: contact.linkedinUrl ?? undefined,
       companyId,
+      // Re-evaluate buyer status if title was updated
+      isBuyer: isBuyerTitle(contact.title),
     },
   });
 

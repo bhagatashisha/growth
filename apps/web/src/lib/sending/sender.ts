@@ -3,6 +3,7 @@ import { checkSendEligibility } from "@/lib/sending/eligibility";
 import { renderTemplate } from "@/lib/sending/template-renderer";
 import { generateUnsubscribeToken } from "@/lib/sending/unsubscribe-token";
 import { scheduleNextStep } from "@/lib/sending/sequence-scheduler";
+import { injectUtmIntoText } from "@/lib/utm";
 
 export interface SendResult {
   sent: boolean;
@@ -82,7 +83,13 @@ export async function sendOutreachStep(
   const unsubscribeUrl = `${appUrl}/unsubscribe?email=${emailB64}&token=${token}`;
   const footer = `\n\n---\nDon't want to hear from us? [Unsubscribe](${unsubscribeUrl})`;
 
-  const bodyWithFooter = draft.body + footer;
+  const bodyWithUtm = injectUtmIntoText(draft.body, {
+    source:   "cold_email",
+    medium:   "email",
+    campaign: outreach.campaign.id,
+    content:  `step${stepNumber}`,
+  });
+  const bodyWithFooter = bodyWithUtm + footer;
 
   // Send via Resend
   const fromName = process.env.GROWTH_FROM_NAME ?? "Ashish from Korrali";

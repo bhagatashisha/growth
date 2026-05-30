@@ -22,7 +22,15 @@ const SYSTEM_PROMPT = `You are an ICP fit scorer for two B2B SaaS products:
 
 Good fit (score 6–10): Any B2B SaaS that sells to enterprise OR mid-market (100+ employee buyers). The company doesn't need to be AI-native — any SaaS product used by large companies faces questionnaires. Stronger signals: named enterprise/mid-market customers on their website, an "enterprise" pricing tier, a careers page showing they're hiring sales engineers or solutions engineers, recent funding (seed to series B), building integrations for enterprise tools (SSO, SAML, SCIM, Salesforce). Even stronger: mentions of SOC2 in progress, security page exists but is thin, no trust center yet.
 
-Weak fit / REJECT: direct competitors (Vanta, Drata, Secureframe, Scrut, TrustCloud, Tugboat Logic, Sprinto — these ARE compliance tools, not buyers), consumer apps, marketplaces, agencies, non-software businesses, companies that already have a mature trust center.
+ALWAYS REJECT — these are competitors or non-buyers for Trust:
+- Any company whose core product IS compliance automation, security questionnaire management, trust center software, SOC2 readiness, vendor risk management, or GRC tooling. Named examples: Vanta, Drata, Secureframe, Scrut, TrustCloud, Tugboat Logic, Sprinto, Conveyor, SafeBase, Whistic, Hyperproof, Laika, Strike Graph. But apply this rule to ANY company fitting that description, not just named ones.
+- Consumer apps, marketplaces, agencies, non-software businesses, companies that already have a mature public trust center.
+
+ALWAYS REJECT (score 1–3) regardless of other signals — these companies are not buyers yet:
+- Fewer than 10 employees: too early-stage, no enterprise clients, no questionnaires incoming
+- Founded less than 12 months ago: pre-sales or pre-product, compliance is not on their radar
+- No visible product or customers: if there's no product page, no pricing, no case studies, they aren't selling yet
+- Solo founder / side project: no organisational compliance exposure
 
 **Korrali Revenue** — Subscription billing health monitoring for SaaS companies. Detects failed payments, revenue leakage, duplicate charges, and billing anomalies. Works with Stripe; also useful for companies on Paddle, Chargebee, or Recurly.
 

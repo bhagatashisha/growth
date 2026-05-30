@@ -9,11 +9,14 @@ export const QUEUE_NAMES = {
   TRIAL_INTERVENTION:   "trial.intervention",
   WEEKLY_INSIGHTS:      "weekly.insights",
   CONTENT_GENERATE:     "content.generate",
+  CONTENT_DISTRIBUTE:   "content.distribute",
   CALL_BRIEF:           "call.brief",
   CALL_FOLLOWUP:        "call.followup",
   COMPANY_DISCOVER:     "company.discover",
   CONTACT_FIND:         "contact.find",
-  REDDIT_SCAN:          "reddit.scan",
+  COMMUNITY_SCAN:       "community.scan",
+  LINKEDIN_DRAFT:       "linkedin.draft",
+  VISITOR_PROCESS:      "visitor.process",
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
@@ -227,12 +230,68 @@ export async function enqueueCompanyDiscover(
   });
 }
 
-export async function enqueueRedditScan(): Promise<string | null> {
+export async function enqueueCommunityScan(): Promise<string | null> {
   const boss = await getBoss();
-  return boss.send(QUEUE_NAMES.REDDIT_SCAN, {}, {
-    singletonKey: "reddit-scan",
+  return boss.send(QUEUE_NAMES.COMMUNITY_SCAN, {}, {
+    singletonKey: "community-scan",
     retryLimit: 1,
     retryDelay: 120,
     expireInSeconds: 20 * 60,
+  });
+}
+
+export interface LinkedInDraftPayload {
+  contactId: string;
+}
+
+export async function enqueueLinkedInDraft(
+  payload: LinkedInDraftPayload,
+): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.LINKEDIN_DRAFT, payload, {
+    singletonKey: `linkedin-draft-${payload.contactId}`,
+    retryLimit: 2,
+    retryDelay: 30,
+    expireInSeconds: 10 * 60,
+  });
+}
+
+export interface VisitorProcessPayload {
+  ip: string;
+  page: string;
+  referrer?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  sessionId?: string;
+  orgName?: string;
+}
+
+export async function enqueueVisitorProcess(
+  payload: VisitorProcessPayload,
+): Promise<string | null> {
+  const boss = await getBoss();
+  // Deduplicate by IP within a 6-hour window to avoid hammering fit score for the same visitor
+  const hourBucket = Math.floor(Date.now() / (6 * 60 * 60 * 1000));
+  return boss.send(QUEUE_NAMES.VISITOR_PROCESS, payload, {
+    singletonKey: `visitor-${payload.ip}-${hourBucket}`,
+    retryLimit: 1,
+    expireInSeconds: 10 * 60,
+  });
+}
+
+export interface ContentDistributePayload {
+  draftId: string;
+}
+
+export async function enqueueContentDistribute(
+  payload: ContentDistributePayload,
+): Promise<string | null> {
+  const boss = await getBoss();
+  return boss.send(QUEUE_NAMES.CONTENT_DISTRIBUTE, payload, {
+    singletonKey: `content-distribute-${payload.draftId}`,
+    retryLimit: 2,
+    retryDelay: 60,
+    expireInSeconds: 60 * 60,
   });
 }

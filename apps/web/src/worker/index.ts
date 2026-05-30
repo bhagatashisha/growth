@@ -8,10 +8,13 @@ import { generateCallBrief, generateCallFollowup } from "@/lib/ai/call-briefer";
 import { runTrialIntervention } from "@/lib/trials/intervention-engine";
 import { generateWeeklyInsights } from "@/lib/ai/weekly-insights";
 import { generateContent } from "@/lib/ai/content-generator";
+import { distributeContent } from "@/lib/content/distributor";
 import { sendAutoReply } from "@/lib/sending/reply-sender";
 import { discoverCompanies } from "@/lib/ai/company-discoverer";
 import { findContactForCompany } from "@/lib/import/contact-finder";
-import { runRedditScan } from "@/lib/reddit/scanner";
+import { runCommunityScan } from "@/lib/community/scanner";
+import { buildLinkedInDraft } from "@/lib/linkedin/draft-builder";
+import { processVisitor } from "@/lib/visitor/processor";
 import { ContentType } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import {
@@ -19,7 +22,8 @@ import {
   enqueueTrialIntervention,
   enqueueWeeklyInsights,
   enqueueCompanyDiscover,
-  enqueueRedditScan,
+  enqueueCommunityScan,
+  type VisitorProcessPayload,
 } from "@/lib/queue";
 
 async function main() {
@@ -35,13 +39,16 @@ async function main() {
   const allQueues = [
     "outreach-due-check", "weekly-insights-trigger",
     "trial-daily-check", "company-discover-trigger",
+    "linkedin-draft-trigger", "content-distribute-check",
     QUEUE_NAMES.OUTREACH_SEND, QUEUE_NAMES.FIT_SCORE,
     QUEUE_NAMES.EMAIL_GENERATE, QUEUE_NAMES.REPLY_CLASSIFY,
     QUEUE_NAMES.REPLY_AUTO_SEND, QUEUE_NAMES.TRIAL_INTERVENTION,
     QUEUE_NAMES.WEEKLY_INSIGHTS, QUEUE_NAMES.CONTENT_GENERATE,
+    QUEUE_NAMES.CONTENT_DISTRIBUTE,
     QUEUE_NAMES.CALL_BRIEF, QUEUE_NAMES.CALL_FOLLOWUP,
     QUEUE_NAMES.COMPANY_DISCOVER, QUEUE_NAMES.CONTACT_FIND,
-    "reddit-scan-trigger", QUEUE_NAMES.REDDIT_SCAN,
+    "community-scan-trigger", "seo-topic-refresh", QUEUE_NAMES.COMMUNITY_SCAN,
+    QUEUE_NAMES.LINKEDIN_DRAFT, QUEUE_NAMES.VISITOR_PROCESS,
   ];
   for (const q of allQueues) {
     await boss.createQueue(q);
@@ -124,14 +131,47 @@ async function main() {
     },
   );
 
-  // Reddit scan handler
+  // Community scan handler (Reddit + HN + IH)
   await boss.work(
-    QUEUE_NAMES.REDDIT_SCAN,
+    QUEUE_NAMES.COMMUNITY_SCAN,
     { batchSize: 1, localConcurrency: 1 },
     async ([job]) => {
       if (!job) return;
-      console.log("[worker] reddit.scan");
-      await runRedditScan();
+      console.log("[worker] community.scan");
+      await runCommunityScan();
+    },
+  );
+
+  // LinkedIn draft generation handler
+  await boss.work<{ contactId: string }>(
+    QUEUE_NAMES.LINKEDIN_DRAFT,
+    { batchSize: 1, localConcurrency: 2 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] linkedin.draft ${job.data.contactId}`);
+      await buildLinkedInDraft(job.data.contactId);
+    },
+  );
+
+  // Visitor intent processing handler
+  await boss.work<VisitorProcessPayload>(
+    QUEUE_NAMES.VISITOR_PROCESS,
+    { batchSize: 1, localConcurrency: 3 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] visitor.process ${job.data.ip}`);
+      await processVisitor(job.data);
+    },
+  );
+
+  // Content distribute handler (fires when scheduledFor is reached)
+  await boss.work<{ draftId: string }>(
+    QUEUE_NAMES.CONTENT_DISTRIBUTE,
+    { batchSize: 1, localConcurrency: 1 },
+    async ([job]) => {
+      if (!job) return;
+      console.log(`[worker] content.distribute ${job.data.draftId}`);
+      await distributeContent(job.data.draftId);
     },
   );
 
@@ -256,11 +296,74 @@ async function main() {
     }
   });
 
-  // Every 6 hours: scan Reddit for ICP intent signals
-  await boss.work("reddit-scan-trigger", async ([job]) => {
+  // Daily 8am UTC: scan Reddit (1×/day preserves Tavily budget) + HN + IH
+  // After scan completes, re-analyze topics so the SEO page stays fresh
+  await boss.work("community-scan-trigger", async ([job]) => {
     if (!job) return;
-    await enqueueRedditScan();
-    console.log("[cron] reddit-scan-trigger: enqueued");
+    await enqueueCommunityScan();
+    console.log("[cron] community-scan-trigger: enqueued");
+  });
+
+  // Weekly Monday 10am UTC: re-analyze community mentions → refresh SEO topic suggestions
+  // Topics are stored as a JSON blob in a well-known ContentDraft (slug: "__seo_topics__")
+  // so the /growth/seo page can show pre-computed suggestions without waiting for Claude.
+  await boss.work("seo-topic-refresh", async ([job]) => {
+    if (!job) return;
+    const { analyzeSeoTopics } = await import("@/lib/ai/seo-topic-analyzer");
+    const topics = await analyzeSeoTopics();
+    if (topics.length === 0) return;
+    await prisma.contentDraft.upsert({
+      where: { slug: "__seo_topics__" },
+      create: {
+        type: ContentType.BLOG_POST,
+        slug: "__seo_topics__",
+        title: "SEO Topic Cache",
+        body: JSON.stringify(topics),
+        status: "draft",
+        product: "TRUST",
+      },
+      update: { body: JSON.stringify(topics) },
+    });
+    console.log(`[cron] seo-topic-refresh: cached ${topics.length} topics`);
+  });
+
+  // Daily 9am UTC: generate LinkedIn drafts for new qualified contacts
+  await boss.work("linkedin-draft-trigger", async ([job]) => {
+    if (!job) return;
+    const contacts = await prisma.contact.findMany({
+      where: {
+        linkedinUrl: { not: null },
+        isBuyer: true,
+        linkedInOutreach: null,
+        company: { fitProduct: { not: "REJECT" }, fitScore: { gte: 6 } },
+      },
+      select: { id: true },
+      take: 50,
+    });
+    for (const c of contacts) {
+      const { enqueueLinkedInDraft } = await import("@/lib/queue");
+      await enqueueLinkedInDraft({ contactId: c.id });
+    }
+    if (contacts.length > 0) {
+      console.log(`[cron] linkedin-draft-trigger: enqueued ${contacts.length} drafts`);
+    }
+  });
+
+  // Every 30 min: check for content drafts due to distribute
+  await boss.work("content-distribute-check", async ([job]) => {
+    if (!job) return;
+    const due = await prisma.contentDraft.findMany({
+      where: { status: "scheduled", scheduledFor: { lte: new Date() } },
+      select: { id: true },
+      take: 20,
+    });
+    for (const d of due) {
+      const { enqueueContentDistribute } = await import("@/lib/queue");
+      await enqueueContentDistribute({ draftId: d.id });
+    }
+    if (due.length > 0) {
+      console.log(`[cron] content-distribute-check: enqueued ${due.length} drafts`);
+    }
   });
 
   // Wednesday 5am UTC: discover new companies via web research
@@ -274,11 +377,14 @@ async function main() {
   });
 
 
-  await boss.schedule("outreach-due-check", "*/15 * * * *");
-  await boss.schedule("weekly-insights-trigger", "0 6 * * 1");
-  await boss.schedule("trial-daily-check", "0 7 * * *");
-  await boss.schedule("company-discover-trigger", "0 5 * * 1-5"); // Mon-Fri 5am UTC
-  await boss.schedule("reddit-scan-trigger", "0 */6 * * *"); // every 6 hours
+  await boss.schedule("outreach-due-check",       "*/15 * * * *");
+  await boss.schedule("weekly-insights-trigger",  "0 6 * * 1");
+  await boss.schedule("trial-daily-check",        "0 7 * * *");
+  await boss.schedule("company-discover-trigger", "0 5 * * 1-5");   // Mon-Fri 5am UTC
+  await boss.schedule("community-scan-trigger",   "0 8 * * *");     // daily 8am UTC (Tavily budget)
+  await boss.schedule("seo-topic-refresh",        "0 10 * * 1");    // weekly Mon 10am UTC
+  await boss.schedule("linkedin-draft-trigger",   "0 9 * * *");     // daily 9am UTC
+  await boss.schedule("content-distribute-check", "*/30 * * * *");  // every 30 min
 
   console.log("[worker] all handlers registered, crons scheduled");
 }
